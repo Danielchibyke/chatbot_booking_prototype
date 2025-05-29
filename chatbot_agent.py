@@ -2,11 +2,10 @@ import os
 import logging
 from typing import Dict, Any, List
 from dotenv import load_dotenv
-import random
 
 # LangChain imports
 from langchain_google_genai import ChatGoogleGenerativeAI
-from langchain.agents import Tool, AgentExecutor, create_react_agent
+from langchain.agents import Tool, AgentExecutor
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
 from langchain.agents.format_scratchpad import format_to_openai_function_messages
@@ -24,54 +23,80 @@ class ChatbotAgent:
         self.llm = self._initialize_llm()
         self.tools = self._initialize_tools()
         self.agent_executor = self._initialize_agent()
-        self.conversation_state = {}
 
     def _initialize_llm(self):
-        if not os.getenv("GOOGLE_API_KEY"):
-            logger.warning("GOOGLE_API_KEY not found in .env")
-        
+        """Initialize with creative but controlled parameters"""
         return ChatGoogleGenerativeAI(
-            model="gemini-1.5-flash-latest",
-            temperature=0.7,  # Increased for more varied responses
+            model="gemini-1.5-flash-latest",  # More advanced model
+            temperature=0.8,  # Higher creativity
+            top_p=0.9,  # For more diverse responses
             convert_system_message_to_human=True
         )
 
+    def _safe_check_availability(self, args: Dict[str, Any]) -> list:
+        """Wrapper for check_availability with error handling"""
+        try:
+            return check_availability(args["service_type"], args["date"])
+        except Exception as e:
+            logger.error(f"CheckAvailability error: {e}")
+            return []
+
+    def _safe_book_appointment(self, args: Dict[str, Any]) -> bool:
+        """Wrapper for book_appointment with error handling"""
+        try:
+            return book_appointment(
+                args["service_type"],
+                args["date"],
+                args["time"],
+                args["user_name"]
+            )
+        except Exception as e:
+            logger.error(f"BookAppointment error: {e}")
+            return False
+
     def _initialize_tools(self):
+        """Enhanced tool descriptions for better AI understanding"""
         return [
             Tool(
                 name="CheckAvailability",
                 func=self._safe_check_availability,
-                description="Check available slots for a service. Input: {'service_type': str, 'date': 'YYYY-MM-DD'}"
+                description="Check available slots. Parameters: {'service_type': string, 'date': 'YYYY-MM-DD'}. Returns list of times."
             ),
             Tool(
                 name="BookAppointment",
                 func=self._safe_book_appointment,
-                description="Book an appointment. Input: {'service_type': str, 'date': 'YYYY-MM-DD', 'time': 'HH:MM', 'user_name': str}"
+                description="Finalize booking. Parameters: {'service_type': string, 'date': 'YYYY-MM-DD', 'time': 'HH:MM', 'user_name': string}. Returns boolean."
             ),
             Tool(
-                name="GetAllServices",
+                name="ListServices",
                 func=lambda _: get_all_services(),
-                description="List all available services. Input: {}"
+                description="Get all offered services. No parameters needed. Returns service names and descriptions."
             )
         ]
 
     def _create_prompt(self):
+        """More nuanced system prompt guiding natural conversation"""
         return ChatPromptTemplate.from_messages([
-            SystemMessage(content="""You are a friendly, human-like appointment booking assistant. Follow these guidelines:
-1. Be conversational and natural - use casual language and occasional pleasantries
-2. When asking for information, be polite and explain why you need it
-3. Vary your responses - don't repeat the same phrases
-4. Show empathy and understanding
-5. Use natural transitions between topics
-6. Confirm details before booking
-7. If the user asks the same question twice, provide a slightly different response
-8. Maintain a helpful, professional but friendly tone"""),
+            SystemMessage(content="""You are a highly skilled booking assistant with exceptional conversational abilities. Your responses must:
+
+1. Flow naturally like human conversation with varied phrasing
+2. Never use repetitive or robotic language
+3. Handle misunderstandings gracefully by asking thoughtful follow-ups
+4. Adapt responses based on conversation history
+5. For unrecognized requests, creatively connect to bookable services
+6. Maintain professional yet warm tone with natural empathy
+
+Current services are in-person only. When users ask about unavailable services like virtual meetings:
+- Acknowledge naturally
+- Highlight benefits of in-person services
+- Suggest alternatives without being pushy"""),
             MessagesPlaceholder(variable_name="chat_history"),
             ("human", "{input}"),
             MessagesPlaceholder(variable_name="agent_scratchpad")
         ])
 
     def _initialize_agent(self):
+        """Configure agent for maximum conversational ability"""
         prompt = self._create_prompt()
         functions = [convert_to_openai_function(tool) for tool in self.tools]
         llm_with_tools = self.llm.bind(functions=functions)
@@ -93,30 +118,12 @@ class ChatbotAgent:
             agent=agent,
             tools=self.tools,
             verbose=True,
-            handle_parsing_errors=True,
-            max_iterations=5
+            handle_parsing_errors="Check your input and try again",  # Let LLM handle errors
+            max_iterations=6  # Allow more reasoning steps
         )
 
-    def _safe_check_availability(self, args: Dict[str, Any]) -> list:
-        try:
-            return check_availability(args["service_type"], args["date"])
-        except Exception as e:
-            logger.error(f"CheckAvailability error: {e}")
-            return []
-
-    def _safe_book_appointment(self, args: Dict[str, Any]) -> bool:
-        try:
-            return book_appointment(
-                args["service_type"],
-                args["date"],
-                args["time"],
-                args["user_name"]
-            )
-        except Exception as e:
-            logger.error(f"BookAppointment error: {e}")
-            return False
-
     def get_response(self, user_input: str, chat_history: List[Dict[str, str]] = None) -> str:
+        """Let the AI handle all responses naturally"""
         try:
             lc_messages = []
             if chat_history:
@@ -126,36 +133,28 @@ class ChatbotAgent:
                     else:
                         lc_messages.append(AIMessage(content=msg["message"]))
             
-            # Add some randomness to make responses more natural
-            if random.random() < 0.3:  # 30% chance to add a small delay
-                pass  # Could add artificial delay here if desired
-
             result = self.agent_executor.invoke({
                 "input": user_input,
                 "chat_history": lc_messages,
             })
             
-            return self._humanize_response(result["output"])
+            return result["output"]
+        
         except Exception as e:
-            logger.error(f"Agent error: {e}", exc_info=True)
-            return random.choice([
-                "Hmm, I'm having trouble with that. Could you try again?",
-                "Sorry, I didn't catch that. Mind rephrasing?",
-                "I'm having a bit of trouble. Let's try that again."
-            ])
+            logger.error(f"Conversation error: {e}")
+            # Let the LLM generate even error responses
+            recovery_response = self.llm.invoke(
+                f"The user said: '{user_input}'\n"
+                "Our booking system encountered a technical hiccup. "
+                "Craft a polite, natural response that:\n"
+                "1. Acknowledges the issue\n"
+                "2. Keeps the conversation flowing\n"
+                "3. Suggests rephrasing or alternative actions\n"
+                "Respond like a professional human assistant:"
+            )
+            return recovery_response.content
 
-    def _humanize_response(self, response: str) -> str:
-        """Add natural language variations to responses"""
-        greetings = ["Hi there!", "Hello!", "Hey!", ""]
-        closings = ["", "Let me know if you need anything else!", "How can I help further?", "What else can I do for you?"]
-        
-        if random.random() < 0.4:  # 40% chance to add greeting
-            response = f"{random.choice(greetings)} {response}"
-        if random.random() < 0.3:  # 30% chance to add closing
-            response = f"{response} {random.choice(closings)}"
-        
-        return response.strip()
-
+# Singleton instance
 chatbot_agent = ChatbotAgent()
 
 def get_chatbot_response(user_input: str, chat_history: List[Dict[str, str]] = None) -> str:
